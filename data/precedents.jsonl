@@ -1,3 +1,24 @@
-{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","notes":"Approved after metformin + SGLT2 failure; A1c=8.1%."}
-{"plan":"AcmeMA","drug":"Semaglutide","indication":"T2DM","notes":"Approved due to persistent A1c ≥ 7.5 despite metformin; no pancreatitis history."}
-{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","notes":"Approved with BMI=34 after 3 months lifestyle program."}
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","decision":"APPROVED","notes":"A1c=8.3% despite ≥3 months metformin + SGLT2; no contraindications; age 58."}
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","decision":"DENIED","notes":"A1c=7.0% and only on metformin; no additional class tried; step therapy not met."}
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","decision":"DENIED","notes":"Recent pancreatitis in history; safety exclusion triggered."}
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","decision":"APPROVED","notes":"A1c=9.1%; tried/failed metformin + DPP-4; BMI=29; labs <90d; no exclusions."}
+
+{"plan":"AcmeCommercial","drug":"Tirzepatide","indication":"T2DM","decision":"APPROVED","notes":"A1c=8.0% after metformin + SU; CV risk factors documented; no thyroid cancer history."}
+{"plan":"AcmeCommercial","drug":"Tirzepatide","indication":"T2DM","decision":"DENIED","notes":"Metformin intolerance documented but no alternate first-line attempted; requires SGLT2 or DPP-4 trial per policy."}
+
+{"plan":"AcmeMA","drug":"Semaglutide","indication":"T2DM","decision":"APPROVED","notes":"A1c=8.2% with metformin + SGLT2 failure; labs within 60d; age 72; no retinopathy progression."}
+{"plan":"AcmeMA","drug":"Semaglutide","indication":"T2DM","decision":"DENIED","notes":"A1c=7.4%; MA plan threshold is ≥7.5%; last labs 6 months ago; step therapy met but lab recency not met."}
+{"plan":"AcmeMA","drug":"Semaglutide","indication":"T2DM","decision":"DENIED","notes":"Personal/family history of medullary thyroid carcinoma; exclusion per label/policy."}
+
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","decision":"APPROVED","notes":"BMI=35; lifestyle program ≥3 months with documentation; no pregnancy; age 44; no uncontrolled psychiatric disease."}
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","decision":"DENIED","notes":"BMI=28 with no cardiometabolic comorbidity; requires BMI ≥30 or ≥27 + comorbidity."}
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","decision":"DENIED","notes":"BMI=33 but no documented lifestyle program; requires ≥3 months supervised lifestyle per policy."}
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","decision":"DENIED","notes":"Pregnant; absolute exclusion."}
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","decision":"APPROVED","notes":"BMI=28 with HTN + OSA; ≥6 months lifestyle program; no contraindications; age 39."}
+
+{"plan":"AcmeMA","drug":"Tirzepatide","indication":"T2DM","decision":"APPROVED","notes":"A1c=8.6% on metformin + SGLT2; specialist attestation; labs within 90d; age 69."}
+{"plan":"AcmeCommercial","drug":"Wegovy","indication":"Obesity","decision":"DENIED","notes":"BMI=31 but active substance use disorder untreated; plan requires stabilization before GLP-1 for obesity."}
+{"plan":"AcmeCommercial","drug":"Wegovy","indication":"Obesity","decision":"APPROVED","notes":"BMI=32; ≥3 months structured weight program; dyslipidemia documented; no exclusions."}
+{"plan":"AcmeMA","drug":"Wegovy","indication":"Obesity","decision":"DENIED","notes":"BMI=29 with prediabetes only; MA policy requires additional risk (e.g., HTN, ASCVD) or BMI ≥30; lifestyle 8 weeks (needs ≥12)."}
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","decision":"DENIED","notes":"Diagnosis unclear; documentation says 'hyperglycemia' without confirmed T2DM; requires indication alignment."}
+{"plan":"AcmeCommercial","drug":"Tirzepatide","indication":"T2DM","decision":"APPROVED","notes":"A1c=7.8% with metformin intolerance + DPP-4 failure; endocrinology consult attached; no exclusions."}

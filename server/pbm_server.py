@@ -95,17 +95,106 @@ def evaluate_pa(
     missing: List[str] = []
     reasons: List[str] = []
 
+    # -------------------- ADDED: hard requirements + sane thresholds --------------------
+    # Minimal, self-contained checks that run before policy parsing.
+    AGE_MIN = 1                      # treat <1 or None as missing/invalid
+    A1C_MIN_VALID, A1C_MAX_VALID = 4.0, 15.0
+    BMI_MIN_VALID, BMI_MAX_VALID = 10.0, 80.0
+    T2DM_A1C_THRESHOLD = 7.5
+    OBESITY_BMI_PRIMARY = 30.0       # ≥30 OR ≥27 + comorbidity
+    OBESITY_BMI_SECONDARY = 27.0
+
+    diag_texts = [diagnosis_text] + list(patient.get("diagnoses", []) or [])
+    age = patient.get("age", None)
+    a1c = (patient.get("labs", {}) or {}).get("A1c", None)
+    bmi = (patient.get("labs", {}) or {}).get("BMI", None)
+    comorbid = patient.get("comorbidities", []) or []
+
+    required_missing = []
+    if not any(str(x).strip() for x in diag_texts):
+        required_missing.append("Diagnosis text")
+    if age is None or int(age) < AGE_MIN:
+        required_missing.append("Age")
+    if a1c is None:
+        required_missing.append("A1C")
+    if bmi is None:
+        required_missing.append("BMI")
+
+    if required_missing:
+        for r in required_missing:
+            criteria_results.append({"criterion": f"{r} provided", "met": False, "note": f"{r} is missing or invalid"})
+        missing.extend([f"Provide {r}" for r in required_missing])
+
+    # Valid ranges
+    a1c_ok = False
+    if a1c is not None:
+        try:
+            a1c_val = float(a1c)
+        except Exception:
+            a1c_val = -1.0
+        a1c_ok = (A1C_MIN_VALID <= a1c_val <= A1C_MAX_VALID)
+        criteria_results.append({
+            "criterion": f"A1C within valid range ({A1C_MIN_VALID}-{A1C_MAX_VALID})",
+            "met": bool(a1c_ok),
+            "note": f"A1C={a1c}"
+        })
+        if not a1c_ok:
+            missing.append(f"A1C must be between {A1C_MIN_VALID} and {A1C_MAX_VALID}")
+
+    bmi_ok = False
+    if bmi is not None:
+        try:
+            bmi_val = float(bmi)
+        except Exception:
+            bmi_val = -1.0
+        bmi_ok = (BMI_MIN_VALID <= bmi_val <= BMI_MAX_VALID)
+        criteria_results.append({
+            "criterion": f"BMI within valid range ({BMI_MIN_VALID}-{BMI_MAX_VALID})",
+            "met": bool(bmi_ok),
+            "note": f"BMI={bmi}"
+        })
+        if not bmi_ok:
+            missing.append(f"BMI must be between {BMI_MIN_VALID} and {BMI_MAX_VALID}")
+
+    # Indication-specific thresholds
+    lower_diag = " ".join([str(x).lower() for x in diag_texts if x]).strip()
+    is_obesity = ("obesity" in lower_diag) or drug.lower().startswith("wegovy")
+    is_t2dm = ("type 2" in lower_diag) or ("t2dm" in lower_diag) or ("e11" in lower_diag)
+
+    if is_obesity and bmi is not None:
+        obesity_met = (bmi_val >= OBESITY_BMI_PRIMARY) or (bmi_val >= OBESITY_BMI_SECONDARY and len(comorbid) > 0)
+        criteria_results.append({
+            "criterion": f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY} or ≥{OBESITY_BMI_SECONDARY} + comorbidity)",
+            "met": bool(obesity_met),
+            "note": f"BMI={bmi_val if bmi is not None else bmi}, comorbidities={comorbid}"
+        })
+        if not obesity_met:
+            missing.append(
+                f"Obesity BMI policy not met (BMI≥{OBESITY_BMI_PRIMARY} or BMI≥{OBESITY_BMI_SECONDARY} with comorbidity)"
+            )
+
+    if is_t2dm and a1c is not None:
+        t2dm_met = (a1c_val >= T2DM_A1C_THRESHOLD)
+        criteria_results.append({
+            "criterion": f"T2DM A1C threshold (≥{T2DM_A1C_THRESHOLD})",
+            "met": bool(t2dm_met),
+            "note": f"A1C={a1c_val if a1c is not None else a1c}"
+        })
+        if not t2dm_met:
+            missing.append(f"A1C must be ≥ {T2DM_A1C_THRESHOLD} for T2DM policy")
+    # -------------------- end ADDED block --------------------
+
     for c in policy.get("criteria", []):
         ok, note = True, ""
         cl = c.lower()
 
         if "age" in cl and ">=" in cl:
             m = re.search(r"age\s*>=\s*(\d+)", cl)
-            age = int(patient.get("age", 0))
+            age_val = int(patient.get("age", 0))
             thr = int(m.group(1)) if m else 0
-            passed = age >= thr
+            passed = age_val >= thr
             ok &= passed
-            note = f"age={age} (need ≥ {thr})"
+            note = f"age={age_val} (need ≥ {thr})"
             if not passed: missing.append("Age threshold not met")
 
         if "diagnosis" in cl:
@@ -121,29 +210,29 @@ def evaluate_pa(
 
         if "a1c" in cl and ">=" in cl:
             m = re.search(r"a1c\s*>=\s*(\d+(?:\.\d+)?)", cl)
-            a1c = patient.get("labs", {}).get("A1c")
+            a1c_cur = patient.get("labs", {}).get("A1c")
             thr = float(m.group(1)) if m else None
-            if a1c is None or thr is None:
+            if a1c_cur is None or thr is None:
                 ok = False
                 note += ("; " if note else "") + "A1c missing"
                 missing.append("Add recent A1c value")
             else:
-                passed = float(a1c) >= thr
+                passed = float(a1c_cur) >= thr
                 ok &= passed
-                note += ("; " if note else "") + f"A1c={a1c} (need ≥ {thr})"
+                note += ("; " if note else "") + f"A1c={a1c_cur} (need ≥ {thr})"
                 if not passed: missing.append(f"A1c must be ≥ {thr}")
 
         if "bmi" in cl:
-            bmi = patient.get("labs", {}).get("BMI")
+            bmi_cur = patient.get("labs", {}).get("BMI")
             if "or bmi >=" in cl:
-                if bmi is None:
+                if bmi_cur is None:
                     ok = False
                     note += ("; " if note else "") + "BMI missing"
                     missing.append("Add BMI and/or comorbidity")
                 else:
-                    passed = (bmi >= 30) or (bmi >= 27 and len(patient.get("comorbidities", [])) > 0)
+                    passed = (bmi_cur >= 30) or (bmi_cur >= 27 and len(patient.get("comorbidities", [])) > 0)
                     ok &= passed
-                    note += ("; " if note else "") + f"BMI={bmi}, comorbidities={patient.get('comorbidities')}"
+                    note += ("; " if note else "") + f"BMI={bmi_cur}, comorbidities={patient.get('comorbidities')}"
                     if not passed: missing.append("BMI/comorbidity threshold not met")
 
         if "lifestyle" in cl:

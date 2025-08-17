@@ -103,26 +103,99 @@ def fmt_json(obj: object) -> str:
 # Local evaluator (fallback)
 # -----------------------------
 def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, str]) -> Dict:
-    notes = (fields.get("notes") or "").lower()
+    # Parse
+    age = to_int(fields.get("age", ""), 0)
+    a1c = to_float(fields.get("a1c", ""), -1.0)
+    bmi = to_float(fields.get("bmi", ""), -1.0)
+    diagnosis = (fields.get("diagnosis_text") or "").strip()
+
+    # Hard requirements
+    reqs = [
+        "Diagnosis text provided",
+        "Age provided",
+        "A1C provided and valid",
+        "BMI provided and valid",
+    ]
+    meets = []
+    missing = []
+
+    # Required presence checks
+    if diagnosis:
+        meets.append("Diagnosis text provided")
+    else:
+        missing.append("Provide Diagnosis text")
+
+    if age >= 1:
+        meets.append("Age provided")
+    else:
+        missing.append("Provide Age")
+
+    # Valid ranges
+    A1C_MIN_VALID, A1C_MAX_VALID = 4.0, 15.0
+    BMI_MIN_VALID, BMI_MAX_VALID = 10.0, 80.0
+
+    if A1C_MIN_VALID <= a1c <= A1C_MAX_VALID:
+        meets.append("A1C provided and valid")
+    else:
+        missing.append(f"A1C must be between {A1C_MIN_VALID} and {A1C_MAX_VALID}")
+
+    if BMI_MIN_VALID <= bmi <= BMI_MAX_VALID:
+        meets.append("BMI provided and valid")
+    else:
+        missing.append(f"BMI must be between {BMI_MIN_VALID} and {BMI_MAX_VALID}")
+
+    # Indication-specific thresholds
+    lower_diag = diagnosis.lower()
+    is_obesity = ("obesity" in lower_diag) or (drug.lower().startswith("wegovy"))
+    is_t2dm = ("type 2" in lower_diag) or ("t2dm" in lower_diag) or ("e11" in lower_diag)
+
+    T2DM_A1C_THRESHOLD = 7.5
+    OBESITY_BMI_PRIMARY = 30.0
+    OBESITY_BMI_SECONDARY = 27.0
+
+    if is_t2dm:
+        reqs.append(f"T2DM A1C threshold (≥{T2DM_A1C_THRESHOLD})")
+        if a1c >= T2DM_A1C_THRESHOLD:
+            meets.append(f"T2DM A1C threshold (≥{T2DM_A1C_THRESHOLD})")
+        else:
+            missing.append(f"A1C must be ≥ {T2DM_A1C_THRESHOLD} for T2DM policy")
+
+    if is_obesity:
+        reqs.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY} or ≥{OBESITY_BMI_SECONDARY} + comorbidity)")
+        # We don't model comorbidities here; enforce primary BMI as minimal safeguard
+        if bmi >= OBESITY_BMI_PRIMARY:
+            meets.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY} or ≥{OBESITY_BMI_SECONDARY} + comorbidity)")
+        else:
+            missing.append(f"Obesity BMI policy not met (BMI≥{OBESITY_BMI_PRIMARY} or BMI≥{OBESITY_BMI_SECONDARY} with comorbidity)")
+
+    # Formulary + step (basic local heuristics)
     on_formulary = drug in FORMULARY.get(plan, [])
+    notes = (fields.get("notes") or "").lower()
     metformin_fail = "metformin" in notes and any(k in notes for k in ["fail", "failed", "inadequate", "intoler"])
 
-    reqs = ["On plan formulary", "Step: tried/failed metformin"]
-    meets = []
+    reqs.append("On plan formulary")
     if on_formulary:
         meets.append("On plan formulary")
+    else:
+        missing.append("Drug not on plan formulary")
+
+    reqs.append("Step: tried/failed metformin")
     if metformin_fail:
         meets.append("Step: tried/failed metformin")
+    else:
+        # only enforce this if T2DM
+        if is_t2dm:
+            missing.append("Step therapy not met: document tried/failed metformin")
 
-    missing = [r for r in reqs if r not in meets]
-    approved = len(missing) == 0
+    approved = (len(missing) == 0)
     return {
         "requirements": reqs,
         "meets": meets,
-        "missing": missing,
+        "missing": list(dict.fromkeys(missing)),
         "approved": approved,
         "source": "local",
     }
+
 
 # -----------------------------
 # Transform MCP response -> UI sections
