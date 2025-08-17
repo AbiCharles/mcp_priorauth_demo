@@ -1,0 +1,3 @@
+{"plan":"AcmeCommercial","drug":"Semaglutide","indication":"T2DM","notes":"Approved after metformin + SGLT2 failure; A1c=8.1%."}
+{"plan":"AcmeMA","drug":"Semaglutide","indication":"T2DM","notes":"Approved due to persistent A1c ≥ 7.5 despite metformin; no pancreatitis history."}
+{"plan":"AcmeMedicaid","drug":"Wegovy","indication":"Obesity","notes":"Approved with BMI=34 after 3 months lifestyle program."}

@@ -1,0 +1,69 @@
+{
+    "version": "2025-01-01",
+    "plans": {
+      "AcmeCommercial": {
+        "planType": "Commercial",
+        "PA": {
+          "Semaglutide": {
+            "criteria": [
+              "Age >= 18",
+              "Diagnosis: Type 2 diabetes mellitus",
+              "A1c >= 7.0 despite metformin",
+              "Tried/failed: metformin and one additional agent (SGLT2 or SU)",
+              "No contraindication to GLP-1 RA"
+            ],
+            "step_therapy": ["metformin", "SGLT2|SU"],
+            "quantity_limit": "2 pens / month",
+            "exclusions": ["Type 1 diabetes", "history of medullary thyroid carcinoma"]
+          },
+          "Tirzepatide": {
+            "criteria": [
+              "Age >= 18",
+              "Diagnosis: Type 2 diabetes mellitus",
+              "A1c >= 7.0 despite metformin",
+              "Tried/failed: metformin and one additional agent (SGLT2 or DPP-4)",
+              "No contraindication to GLP-1/GIP"
+            ],
+            "step_therapy": ["metformin", "SGLT2|DPP-4"],
+            "quantity_limit": "2 pens / month",
+            "exclusions": ["Type 1 diabetes"]
+          }
+        }
+      },
+      "AcmeMA": {
+        "planType": "Medicare Advantage",
+        "PA": {
+          "Semaglutide": {
+            "criteria": [
+              "Age >= 18",
+              "Diagnosis: Type 2 diabetes mellitus",
+              "A1c >= 7.5 despite metformin",
+              "Tried/failed: metformin and either SGLT2 or SU",
+              "No active pancreatitis"
+            ],
+            "step_therapy": ["metformin", "SGLT2|SU"],
+            "quantity_limit": "2 pens / month",
+            "exclusions": ["Type 1 diabetes", "active pancreatitis"]
+          }
+        }
+      },
+      "AcmeMedicaid": {
+        "planType": "Medicaid",
+        "PA": {
+          "Wegovy": {
+            "criteria": [
+              "Age >= 18",
+              "Diagnosis: Obesity (E66.9)",
+              "BMI >= 30 or BMI >= 27 with comorbidity",
+              "Engaged in lifestyle modification >= 3 months",
+              "No contraindication to GLP-1 RA"
+            ],
+            "step_therapy": [],
+            "quantity_limit": "4 pens / month",
+            "exclusions": ["pregnancy"]
+          }
+        }
+      }
+    }
+  }
+  

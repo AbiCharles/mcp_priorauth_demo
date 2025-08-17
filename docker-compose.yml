@@ -1,0 +1,33 @@
+services:
+  pa-demo:
+    container_name: mcp-pbm-demo
+    image: mcp-pbm-demo:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_VERSION: "3.11"
+    command: python -m client.app            # <— important
+    ports:
+      - "7860:7860"                           # <— fixed mapping for now
+    env_file:
+      - .env
+    environment:
+      GRADIO_HOST: "0.0.0.0"
+      GRADIO_PORT: "7860"
+      GRADIO_SHARE: "false"
+      TOGETHER_MODEL: "${TOGETHER_MODEL:-meta-llama/Llama-3.3-70B-Instruct-Turbo-Free}"
+      TOGETHER_API_KEY: "${TOGETHER_API_KEY:-}"
+      MCP_SERVER_PY: "${MCP_SERVER_PY:-/app/server/pbm_server.py}"
+      PBM_DATA_DIR: "${PBM_DATA_DIR:-/app/data}"
+    volumes:
+      - ./data:/app/data:rw
+      # - ./server:/app/server:ro
+      # - ./client:/app/client:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7860/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped

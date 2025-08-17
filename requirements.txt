@@ -1,0 +1,10 @@
+mcp[cli]
+gradio==4.44.1
+gradio_client==1.3.0
+together>=1.1.0
+pydantic
+mcp>=1.1.0,<2.0.0
+fastmcp>=0.4.0
+fastapi>=0.110
+uvicorn>=0.29
+python-dotenv>=1.0.0
