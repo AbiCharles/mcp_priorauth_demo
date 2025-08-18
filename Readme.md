@@ -98,10 +98,19 @@ image.png
 Create a `.env` in the repo root (Compose will load it). Example:
 
 ```env
-# Gradio serving
+TOGETHER_API_KEY=441887fe7a445e44b4c639d32b7def16a62a684dbf77c190503cf4f6d05615d5
+TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+
+# --- Gradio server settings ---
 GRADIO_HOST=0.0.0.0
 GRADIO_PORT=7860
-GRADIO_SHARE=false
+
+DEFAULT_PLAN=Acme Gold PPO
+DEFAULT_DRUG=DrugX 150mg pen
+DEFAULT_AGE=42
+DEFAULT_DIAGNOSIS=L40.0
+DEFAULT_MEETS_INDICATION=true
+DEFAULT_STEP_DOCS=Clobetasol, Betamethasone
 
 # MCP server location (Python)
 MCP_SERVER_PY=/app/server/pbm_server.py
