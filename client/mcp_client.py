@@ -1,4 +1,17 @@
 # client/mcp_client.py
+"""
+MCPClient — minimal stdio client for interacting with an MCP server (e.g., pbm_server.py).
+
+This client:
+- Spawns the MCP server as a subprocess (via stdio).
+- Establishes a session using the official MCP Python SDK.
+- Provides wrappers for listing tools, plans, drugs, and evaluating prior authorization.
+
+Environment variables respected:
+- MCP_SERVER_CMD: explicit command to run the server (string or list form).
+- MCP_SERVER_PY:  fallback path to a Python server file if MCP_SERVER_CMD not provided.
+"""
+
 from __future__ import annotations
 
 import os
@@ -9,13 +22,22 @@ import shutil
 import contextlib
 from typing import Any, Dict, List, Optional
 
-# NOTE: This requires mcp>=1.1.0,<2.0.0
+# NOTE: Requires mcp>=1.1.0,<2.0.0
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.session import ClientSession
 
 
 def _split_cmd(cmd: str | List[str]) -> tuple[str, List[str]]:
-    """Split a command into (executable, args)."""
+    """
+    Split a command string or list into (executable, args).
+
+    Args:
+        cmd: Either a shell command string (e.g. "python server.py")
+             or a list form (["python", "server.py"]).
+
+    Returns:
+        (executable, args) tuple.
+    """
     if isinstance(cmd, list):
         if not cmd:
             return "python", []
@@ -28,9 +50,9 @@ class MCPClient:
     """
     Minimal stdio MCP client that spawns the MCP server (pbm_server.py) per call.
 
-    Respects:
-      - MCP_SERVER_CMD  e.g. `python -u /app/server/pbm_server.py` OR `node /app/server_node/pbm_server.mjs`
-      - MCP_SERVER_PY   path to the Python server .py (used if MCP_SERVER_CMD not set)
+    Respects environment variables:
+      - MCP_SERVER_CMD: explicit command (Python or Node.js).
+      - MCP_SERVER_PY:  path to Python server file (used if CMD not set).
     """
 
     def __init__(
@@ -39,17 +61,26 @@ class MCPClient:
         server_py: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
     ):
-        # Build env for the child process
+        """
+        Initialize the MCP client configuration.
+
+        Args:
+            server_cmd: Explicit command to launch server (string or list).
+            server_py: Path to Python server file (fallback).
+            env: Extra environment variables to pass to subprocess.
+        """
+        # Build child process environment
         child_env = os.environ.copy()
         if env:
             child_env.update(env)
-        # If you need module imports to resolve inside /app, uncomment:
+
+        # If extra Python imports need resolving inside /app:
         # child_env["PYTHONPATH"] = child_env.get("PYTHONPATH", "/app")
 
-        # Resolve command preference: explicit -> env -> python fallback
+        # Resolve which command to run
         cmd_spec = server_cmd or os.getenv("MCP_SERVER_CMD")
         if not cmd_spec:
-            # Use MCP_SERVER_PY or default to our Python server
+            # Fall back to Python server path
             server_py = server_py or os.getenv("MCP_SERVER_PY") or "/app/server/pbm_server.py"
             server_py = os.path.abspath(server_py)
             py = shutil.which("python") or shutil.which("python3") or "python"
@@ -57,27 +88,46 @@ class MCPClient:
 
         command, args = _split_cmd(cmd_spec)
 
-        # IMPORTANT: the current `mcp` Python client expects StdioServerParameters
+        # Construct MCP server parameters object
         self.server_params = StdioServerParameters(command=command, args=args, env=child_env)
 
     # ---- Session plumbing ----
     def _run(self, coro):
+        """Helper: run async coroutine synchronously."""
         return asyncio.run(coro)
 
     async def _with_session(self, fn):
+        """
+        Open a stdio session with the MCP server, run `fn(session)`, then cleanly shut down.
+
+        Args:
+            fn: Async function that takes a ClientSession.
+
+        Returns:
+            Result of `fn(session)`.
+        """
         async with stdio_client(self.server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 try:
                     return await fn(session)
                 finally:
+                    # Ensure clean shutdown even if errors occur
                     with contextlib.suppress(Exception):
                         await session.shutdown()
 
     # ---- Helpers ----
     @staticmethod
     def _to_python(value: Any) -> Any:
-        """Best-effort extraction of JSON/text from MCP tool results."""
+        """
+        Convert MCP tool output into Python-native objects if possible.
+
+        Handles:
+        - Pydantic-style content blocks with type/json/text fields.
+        - Dicts containing "json" or "text".
+        - Strings or bytes that may contain JSON.
+        - Falls back to returning the raw value.
+        """
         if value is None:
             return None
 
@@ -120,6 +170,12 @@ class MCPClient:
 
     # ---- Public API ----
     def list_tools(self) -> List[Dict[str, Any]]:
+        """
+        List all tools exposed by the MCP server.
+
+        Returns:
+            A list of dicts with {"name": str, "description": str}.
+        """
         async def runner(session: ClientSession):
             res = await session.list_tools()
             tools = getattr(res, "tools", res)
@@ -137,6 +193,16 @@ class MCPClient:
         return self._run(self._with_session(runner))
 
     def _call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Call a specific MCP tool by name with given arguments.
+
+        Args:
+            name: Tool name.
+            arguments: Arguments dict.
+
+        Returns:
+            Decoded Python object or raw result.
+        """
         async def runner(session: ClientSession):
             res = await session.call_tool(name, arguments=arguments)
             content = getattr(res, "content", None) or getattr(res, "outputs", None) or res
@@ -151,14 +217,28 @@ class MCPClient:
 
     # Convenience wrappers
     def list_plans(self) -> List[str]:
+        """Return all plan names via MCP tool."""
         v = self._call_tool("list_plans", {})
         return list(v) if isinstance(v, (list, tuple)) else []
 
     def list_drugs(self, plan: str) -> List[str]:
+        """Return drugs requiring PA for a given plan."""
         v = self._call_tool("list_drugs", {"plan": plan})
         return list(v) if isinstance(v, (list, tuple)) else []
 
     def evaluate_pa(self, plan: str, drug: str, diagnosis_text: str, patient: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run the `evaluate_pa` tool on the MCP server.
+
+        Args:
+            plan: Plan name.
+            drug: Drug name.
+            diagnosis_text: Clinical diagnosis text.
+            patient: Patient dict with fields like age, labs, tried_failed, etc.
+
+        Returns:
+            Dict with decision_code, outcome, criteria_evaluation, etc.
+        """
         v = self._call_tool(
             "evaluate_pa",
             {"plan": plan, "drug": drug, "diagnosis_text": diagnosis_text, "patient": patient},

@@ -67,7 +67,7 @@ simpler evaluator and tells you it did so.
 - .env (you create this)
 
 ```
-
+image.png
 .
 ├── client/
 │   ├── app.py                 # Gradio UI (uses MCP if available; local fallback otherwise)
