@@ -18,7 +18,7 @@ A small, end‑to‑end demo that uses **Model Context Protocol (MCP)** to evalu
 
 ---
 
-## How it works (MCP in this project)
+## Details on how it works (MCP in this project)
 
 MCP (Model Context Protocol) defines a standard way for a **client** to call **tools**
 on a **server** over a stream (stdio here). In this project:
