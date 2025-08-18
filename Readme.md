@@ -98,7 +98,7 @@ image.png
 Create a `.env` in the repo root (Compose will load it). Example:
 
 ```env
-TOGETHER_API_KEY=441887fe7a445e44b4c639d32b7def16a62a684dbf77c190503cf4f6d05615d5
+TOGETHER_API_KEY=<your-key-here>
 TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
 
 # --- Gradio server settings ---
