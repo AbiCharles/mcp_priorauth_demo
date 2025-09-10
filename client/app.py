@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import gradio as gr
+import requests  # HTTP client for FastAPI calls
 
 # ---- MCP client import (robust, lazy connect) ----
 MCP_AVAILABLE = False
@@ -28,23 +30,26 @@ if MCPClient:
 # -----------------------------------------------
 
 # ------------------------------------
-
 DATA_DIR = Path("/app/data")
 FORMULARY_PATH = DATA_DIR / "formulary.json"
 
-# Preferred defaults (can be overridden by env)
-DEFAULT_PLAN = os.environ.get("DEFAULT_PLAN", "Acme Health HMO")
-DEFAULT_DRUG = os.environ.get("DEFAULT_DRUG", "Ozempic (semaglutide)")
+# Preferred defaults (can be overridden by env) — prefilled to an APPROVE case
+DEFAULT_PLAN = os.environ.get("DEFAULT_PLAN", "AcmeCommercial")
+DEFAULT_DRUG = os.environ.get("DEFAULT_DRUG", "Semaglutide")
+
+# FastAPI policy server base URL (pbm_server.py)
+PBM_API_BASE = os.getenv("PBM_API_BASE", "http://localhost:7860").rstrip("/")
 
 DEFAULTS = {
     "plan": DEFAULT_PLAN,
     "drug": DEFAULT_DRUG,
-    "diagnosis_text": "Type 2 diabetes mellitus, poorly controlled",
+    "diagnosis_text": "Type 2 diabetes mellitus",  # meets Diagnosis criterion
     "icd10": "E11.65",
-    "age": "56",
-    "a1c": "8.4",
-    "bmi": "33.1",
-    "notes": "Tried/failed metformin; high CV risk; consider SGLT2 add-on if needed.",
+    "age": "52",                                   # meets Age >= 18
+    "a1c": "8.1",                                  # used by local fallback
+    "bmi": "31.0",
+    # API path reads A1c & step therapy from NOTES (plus tried meds list)
+    "notes": "A1c 8.1% despite 6 months of metformin and empagliflozin; no contraindications.",
     "indication": "Type 2 diabetes",
 }
 
@@ -66,8 +71,9 @@ def load_formulary_map() -> Dict[str, List[str]]:
         pass
     # sensible stub
     return {
-        "Acme Health HMO": ["Ozempic (semaglutide)", "Mounjaro (tirzepatide)", "Trulicity (dulaglutide)"],
-        "Piedmont PPO": ["Rybelsus (semaglutide PO)", "Victoza (liraglutide)"],
+        "AcmeCommercial": ["Semaglutide", "Tirzepatide"],
+        "AcmeMA": ["Semaglutide"],
+        "AcmeMedicaid": ["Wegovy"],
     }
 
 FORMULARY = load_formulary_map()
@@ -98,6 +104,36 @@ def to_int(s: str, default: int = 0) -> int:
 
 def fmt_json(obj: object) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
+
+def _api_alive() -> bool:
+    try:
+        r = requests.get(f"{PBM_API_BASE}/healthz", timeout=(2, 5))
+        return r.ok
+    except Exception:
+        return False
+
+# Map common brand names → generic keys used in policy
+_BRAND_TO_GENERIC = {
+    "ozempic": "Semaglutide",
+    "rybelsus": "Semaglutide",
+    "wegovy": "Wegovy",
+    "mounjaro": "Tirzepatide",
+    "trulicity": "Dulaglutide",
+    "victoza": "Liraglutide",
+}
+def _normalize_drug_for_api(drug: str) -> str:
+    """
+    Prefer generic (e.g., 'Ozempic (semaglutide)' -> 'Semaglutide').
+    Falls back to small brand map or original string.
+    """
+    m = re.search(r"\(([^)]+)\)", drug or "")
+    if m:
+        return m.group(1).strip().title()
+    low = (drug or "").lower().strip()
+    for brand, generic in _BRAND_TO_GENERIC.items():
+        if brand in low:
+            return generic
+    return (drug or "").strip()
 
 # -----------------------------
 # Local evaluator (fallback)
@@ -196,7 +232,6 @@ def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, 
         "source": "local",
     }
 
-
 # -----------------------------
 # Transform MCP response -> UI sections
 # -----------------------------
@@ -245,7 +280,7 @@ def mcp_to_sections(resp: Dict[str, any]) -> Dict[str, any]:
     }
 
 # -----------------------------
-# MCP orchestration
+# MCP discovery (optional)
 # -----------------------------
 def try_mcp_lists() -> Tuple[List[str], Dict[str, List[str]]]:
     if not MCP_AVAILABLE:
@@ -262,66 +297,137 @@ def try_mcp_lists() -> Tuple[List[str], Dict[str, List[str]]]:
     except Exception:
         return ALL_PLANS, FORMULARY
 
-def evaluate_via_mcp(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, str]) -> Tuple[Dict, str, List[str], Dict, Dict]:
+# -----------------------------
+# MCP/API orchestration
+# -----------------------------
+def evaluate_via_mcp(
+    plan: str,
+    drug: str,
+    diagnosis_text: str,
+    fields: Dict[str, str],
+    use_llama: bool,   # controls LLaMA rationale on API
+) -> Tuple[Dict, str, List[str], Dict, Dict, str]:
     """
-    Returns (sections, provenance, steps, patient_payload, raw_response)
+    Returns (sections, provenance, steps, patient_payload, raw_response, llm_rationale)
+    Preference order:
+      1) FastAPI (pbm_server) if PBM_API_BASE is alive
+      2) MCP server if available
+      3) Local heuristic fallback
     """
     steps: List[str] = []
     patient_payload: Dict = {}
     raw_resp: Dict = {}
+    llm_rationale: str = ""
 
-    if not MCP_AVAILABLE:
-        steps.append("MCP not available → local fallback evaluator used.")
-        local = local_evaluate(plan, drug, diagnosis_text, fields)
-        return local, "Evaluated locally (MCP unavailable)", steps, patient_payload, raw_resp
+    # Build shared patient payload from UI fields
+    notes = fields.get("notes", "") or ""
+    notes_low = notes.lower()
+    tried_failed = []
+    if "metformin" in notes_low:
+        tried_failed.append("metformin")
+    for kw in [
+        "empagliflozin", "dapagliflozin", "canagliflozin", "ertugliflozin", "sglt2",
+        "sulfonylurea", "glipizide", "glimepiride", "glyburide",
+        "sitagliptin", "linagliptin", "alogliptin", "dpp-4"
+    ]:
+        if kw in notes_low:
+            tried_failed.append(kw)
 
-    try:
-        client = MCPClient()
-        steps.append("Started MCP client process.")
-        try:
-            tools = client.list_tools()
-            steps.append(f"Discovered tools: {', '.join(sorted([t.get('name','') for t in tools if isinstance(t, dict)])) or '(none)'}")
-        except Exception as e:
-            steps.append(f"Failed to list tools: {e}")
+    # ------------------ Try API (uses LLaMA) ------------------
+    if _api_alive():
+        steps.append(f"Detected FastAPI at {PBM_API_BASE}/healthz.")
+        api_drug = _normalize_drug_for_api(drug)
+        steps.append(f"Using API drug key: '{api_drug}' (from '{drug}').")
+        steps.append(f"LLaMA rationale: {'enabled' if use_llama else 'disabled'} (use_llm flag).")
 
-        # Build patient payload (server expects these fields)
-        notes = fields.get("notes", "")
-        notes_low = (notes or "").lower()
-        tried_failed = []
-        if "metformin" in notes_low:
-            tried_failed.append("metformin")
-        for kw in ["empagliflozin", "dapagliflozin", "canagliflozin", "sglt2", "sulfonylurea", "glipizide", "glimepiride",
-                   "sitagliptin", "linagliptin", "alogliptin", "dpp-4"]:
-            if kw in notes_low:
-                tried_failed.append(kw)
-
-        patient_payload = {
-            "age": to_int(fields.get("age", "0"), 0),
-            "diagnoses": [fields.get("diagnosis_text", ""), fields.get("icd10", ""), fields.get("indication", "")],
-            "labs": {
-                "A1c": to_float(fields.get("a1c", "0"), 0.0),
-                "BMI": to_float(fields.get("bmi", "0"), 0.0),
+        api_payload = {
+            "plan": plan,
+            "drug": api_drug,
+            "use_llm": bool(use_llama),  # drives LLaMA usage server-side
+            "patient": {
+                "age": to_int(fields.get("age", "0"), 0),
+                "diagnoses": [diagnosis_text, fields.get("icd10", ""), fields.get("indication", "")],
+                "tried_medications": tried_failed,
+                "allergies": [],
+                "notes": notes,
+                "labs": {
+                    "A1c": to_float(fields.get("a1c", "0"), 0.0),
+                    "BMI": to_float(fields.get("bmi", "0"), 0.0),
+                },
             },
-            "comorbidities": [],
-            "lifestyle_months": 3,
-            "tried_failed": tried_failed,
-            "contraindications": [],
         }
-        steps.append("Built patient payload.")
+        patient_payload = api_payload["patient"]
 
-        raw_resp = client.evaluate_pa(plan, drug, diagnosis_text, patient_payload)
-        steps.append(f"Called MCP tool `evaluate_pa(plan={plan}, drug={drug})` and received response.")
+        try:
+            r = requests.post(
+                f"{PBM_API_BASE}/evaluate_pa",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps(api_payload),
+                timeout=(5, 30),
+            )
+            r.raise_for_status()
+            raw_resp = r.json()
+            steps.append("Called API /evaluate_pa and received response.")
 
-        sections = mcp_to_sections(raw_resp)
-        steps.append("Translated MCP response → UI sections (requirements/meets/missing/approved).")
-        sections["_raw"] = raw_resp
-        return sections, "Evaluated via MCP server", steps, patient_payload, raw_resp
+            dec = raw_resp.get("decision", {}) or {}
+            status = str(dec.get("status", "")).upper()
+            policy_criteria = dec.get("policy_criteria", []) or []
+            missing = dec.get("missing_criteria", []) or []
+            llm_rationale = raw_resp.get("rationale") or ""
 
-    except Exception as e:
-        fallback = local_evaluate(plan, drug, diagnosis_text, fields)
-        fallback["_mcp_error"] = str(e)
-        steps.append(f"MCP evaluation failed: {e} → local fallback used.")
-        return fallback, f"MCP failed, used local fallback: {e}", steps, patient_payload, raw_resp
+            # Approximate 'meets' = criteria - missing
+            meets = [c for c in policy_criteria if c not in set(missing)]
+            sections = {
+                "requirements": policy_criteria,
+                "meets": meets,
+                "missing": missing,
+                "approved": (status == "APPROVE"),
+            }
+            sections["_raw"] = raw_resp
+            return sections, "Evaluated via FastAPI (pbm_server)", steps, patient_payload, raw_resp, llm_rationale
+
+        except Exception as e:
+            steps.append(f"API evaluation failed: {e}. Falling back to MCP/local.")
+
+    # ------------------ MCP path (unchanged) ------------------
+    if MCP_AVAILABLE:
+        try:
+            client = MCPClient()
+            steps.append("Started MCP client process.")
+            try:
+                tools = client.list_tools()
+                steps.append(f"Discovered tools: {', '.join(sorted([t.get('name','') for t in tools if isinstance(t, dict)])) or '(none)'}")
+            except Exception as e:
+                steps.append(f"Failed to list tools: {e}")
+
+            patient_payload = {
+                "age": to_int(fields.get("age", "0"), 0),
+                "diagnoses": [fields.get("diagnosis_text", ""), fields.get("icd10", ""), fields.get("indication", "")],
+                "labs": {
+                    "A1c": to_float(fields.get("a1c", "0"), 0.0),
+                    "BMI": to_float(fields.get("bmi", "0"), 0.0),
+                },
+                "comorbidities": [],
+                "lifestyle_months": 3,
+                "tried_failed": tried_failed,
+                "contraindications": [],
+            }
+            steps.append("Built patient payload.")
+
+            raw_resp = client.evaluate_pa(plan, drug, diagnosis_text, patient_payload)
+            steps.append(f"Called MCP tool `evaluate_pa(plan={plan}, drug={drug})` and received response.")
+
+            sections = mcp_to_sections(raw_resp)
+            steps.append("Translated MCP response → UI sections (requirements/meets/missing/approved).")
+            sections["_raw"] = raw_resp
+            return sections, "Evaluated via MCP server", steps, patient_payload, raw_resp, llm_rationale
+
+        except Exception as e:
+            steps.append(f"MCP evaluation failed: {e} → local fallback used.")
+
+    # ------------------ Local fallback ------------------
+    local = local_evaluate(plan, drug, diagnosis_text, fields)
+    return local, "Evaluated locally (no API/MCP)", steps, patient_payload, raw_resp, llm_rationale
 
 # -----------------------------
 # UI
@@ -362,7 +468,8 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
     indication_tb = gr.Textbox(label="Indication (for 'Meets Indication')", value=DEFAULTS["indication"])
 
     with gr.Row():
-        use_mcp_chk = gr.Checkbox(label="Use MCP server (if available)", value=True)
+        use_mcp_chk = gr.Checkbox(label="Use MCP/API (if available)", value=True)
+        use_llama_chk = gr.Checkbox(label="Use LLaMA rationale (server)", value=True)  # drives API use_llm
         evaluate_btn = gr.Button("Evaluate", variant="primary")
         reload_defaults_btn = gr.Button("Reload defaults")
 
@@ -374,21 +481,20 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
     missing_md = gr.Markdown("### Missing Requirements\n- *(none yet)*")
     approval_banner = gr.HTML("")
     provenance_md = gr.Markdown("")
+    llm_md = gr.Markdown("### LLM Rationale\n*(none yet)*")  # shows LLaMA explanation if enabled
 
-    # --- NEW: Trace & Debug tab (minimal addition) ---
+    # Trace & Debug tab (kept)
     with gr.Tabs():
         with gr.Tab("Trace & Debug"):
-            steps_md = gr.Markdown("### MCP Trace\n*(no steps yet)*")
-            patient_code = gr.Code(label="Patient payload sent to MCP", value="{}", language="json")
-            raw_code = gr.Code(label="Raw MCP response", value="{}", language="json")
-    # --------------------------------------------------
+            steps_md = gr.Markdown("### Trace\n*(no steps yet)*")
+            patient_code = gr.Code(label="Patient payload sent", value="{}", language="json")
+            raw_code = gr.Code(label="Raw response", value="{}", language="json")
 
     def on_plan_change(plan: str) -> dict:
         choices = FORMULARY.get(plan, [])
         value = DEFAULT_DRUG if DEFAULT_DRUG in choices else (choices[0] if choices else "")
         return gr.update(choices=choices, value=value)
 
-    # MINIMAL FIX: disable queue for this event
     plan_dd.change(fn=on_plan_change, inputs=[plan_dd], outputs=[drug_dd], queue=False)
 
     def on_reload_defaults():
@@ -405,7 +511,6 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
             gr.update(value=DEFAULTS["indication"]),
         )
 
-    # MINIMAL FIX: disable queue for this event
     reload_defaults_btn.click(
         fn=on_reload_defaults,
         inputs=[],
@@ -458,7 +563,8 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
         bmi: str,
         notes: str,
         indication_text: str,
-        use_mcp: bool,
+        use_remote: bool,
+        use_llama: bool,
     ):
         fields = {
             "diagnosis_text": diagnosis_text,
@@ -470,11 +576,13 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
             "indication": indication_text,
         }
 
-        if use_mcp:
-            evaluation, prov, steps, patient_payload, raw_resp = evaluate_via_mcp(plan, drug, diagnosis_text, fields)
+        if use_remote:
+            evaluation, prov, steps, patient_payload, raw_resp, llm_rationale = evaluate_via_mcp(
+                plan, drug, diagnosis_text, fields, use_llama
+            )
         else:
             # local path but still show what we'd send and steps
-            steps = ["MCP disabled by user → local evaluator used."]
+            steps = ["Remote (API/MCP) disabled by user → local evaluator used."]
             patient_payload = {
                 "age": to_int(fields.get("age", "0"), 0),
                 "diagnoses": [fields.get("diagnosis_text", ""), fields.get("icd10", ""), fields.get("indication", "")],
@@ -484,61 +592,66 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
                 "tried_failed": [],
                 "contraindications": [],
             }
-            evaluation, prov = local_evaluate(plan, drug, diagnosis_text, fields), "Evaluated locally (MCP disabled)"
+            evaluation, prov = local_evaluate(plan, drug, diagnosis_text, fields), "Evaluated locally (remote disabled)"
             raw_resp = {}
+            llm_rationale = ""
 
         if "requirements" not in evaluation:
             evaluation = mcp_to_sections(evaluation)
 
         full_req, meets, missing, banner = render_sections(evaluation)
-        extra = ""
-        if evaluation.get("_mcp_error"):
-            extra = f"\n> ⚠️ MCP error: `{evaluation['_mcp_error']}`\n"
 
-        # Build trace markdown
-        steps_md_text = "### MCP Trace\n" + "\n".join([f"- {s}" for s in steps]) if steps else "### MCP Trace\n- *(no steps)*"
+        # Trace markdown
+        steps_md_text = "### Trace\n" + "\n".join([f"- {s}" for s in steps]) if steps else "### Trace\n- *(no steps)*"
+
+        # If API provided model name, surface it
+        model_name = ""
+        try:
+            dbg = (raw_resp or {}).get("debug") or {}
+            model_name = dbg.get("together_model") or ""
+        except Exception:
+            pass
+        if model_name:
+            steps_md_text += f"\n\n*LLM model:* `{model_name}`"
+
+        # LLM rationale panel
+        llm_text = f"### LLM Rationale\n{llm_rationale}" if llm_rationale else "### LLM Rationale\n*(disabled or not available)*"
 
         return (
             full_req,
             meets,
             missing,
             banner,
-            f"_{prov}_ {extra}",
+            f"_{prov}_",
+            llm_text,
             steps_md_text,
             fmt_json(patient_payload),
-            fmt_json(raw_resp if raw_resp else {"note": "No MCP response (local path)."}),
+            fmt_json(raw_resp if raw_resp else {"note": "No remote response (local path)."}),
         )
 
-    # MINIMAL FIX: disable queue for this event
     evaluate_btn.click(
         fn=on_evaluate,
-        inputs=[plan_dd, drug_dd, diagnosis_tb, icd10_tb, age_tb, a1c_tb, bmi_tb, notes_tb, indication_tb, use_mcp_chk],
-        outputs=[
-            full_req_md,
-            meets_md,
-            missing_md,
-            approval_banner,
-            provenance_md,
-            # --- NEW outputs for Trace tab ---
-            steps_md,
-            patient_code,
-            raw_code,
+        inputs=[
+            plan_dd, drug_dd, diagnosis_tb, icd10_tb, age_tb, a1c_tb, bmi_tb, notes_tb, indication_tb,
+            use_mcp_chk, use_llama_chk
         ],
-        queue=False,           # <-- important
-        concurrency_limit=3,   # optional: keeps handler from being spammed
+        outputs=[
+            full_req_md, meets_md, missing_md, approval_banner, provenance_md,
+            llm_md, steps_md, patient_code, raw_code
+        ],
+        queue=False,
+        concurrency_limit=3,
     )
 
-# *** Minimal fix: use direct /run/predict by avoiding the queue path ***
+# Keep UI on 7861 so API can own 7860
 if __name__ == "__main__":
-    import os
-
     GR_HOST = os.getenv("GRADIO_HOST", "0.0.0.0")
-    GR_PORT = int(os.getenv("GRADIO_PORT", "7860"))
+    GR_PORT = int(os.getenv("GRADIO_PORT", "7861"))
     GR_SHARE = os.getenv("GRADIO_SHARE", "false").lower() == "true"
 
     print(f"[boot] Gradio starting on {GR_HOST}:{GR_PORT} (share={GR_SHARE})")
 
-    # NOTE: Do NOT call demo.queue() here. Per-event queue=False above avoids /queue/join.
+    # NOTE: We avoid demo.queue(); events use queue=False above.
     demo.launch(
         server_name=GR_HOST,
         server_port=GR_PORT,

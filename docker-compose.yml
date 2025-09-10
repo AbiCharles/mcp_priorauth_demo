@@ -1,33 +1,19 @@
+# docker-compose.yml
 services:
-  pa-demo:
-    container_name: mcp-pbm-demo
-    image: mcp-pbm-demo:latest
+  mcp-pbm-demo:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        PYTHON_VERSION: "3.11"
-    command: python -m client.app            # <— important
+    command: bash -lc 'uvicorn server.pbm_server:app --host 0.0.0.0 --port 7860 & python -m client.app'
     ports:
-      - "7860:7860"                           # <— fixed mapping for now
-    env_file:
-      - .env
+      - "7860:7860"   # FastAPI API
+      - "7861:7861"   # Gradio UI
     environment:
+      PBM_API_BASE: "http://localhost:7860"   # UI calls API
       GRADIO_HOST: "0.0.0.0"
-      GRADIO_PORT: "7860"
-      GRADIO_SHARE: "false"
-      TOGETHER_MODEL: "${TOGETHER_MODEL:-meta-llama/Llama-3.3-70B-Instruct-Turbo-Free}"
+      GRADIO_PORT: "7861"                     # force UI port
       TOGETHER_API_KEY: "${TOGETHER_API_KEY:-}"
-      MCP_SERVER_PY: "${MCP_SERVER_PY:-/app/server/pbm_server.py}"
-      PBM_DATA_DIR: "${PBM_DATA_DIR:-/app/data}"
+      TOGETHER_MODEL: "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
     volumes:
       - ./data:/app/data:rw
-      # - ./server:/app/server:ro
-      # - ./client:/app/client:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:7860/ >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
     restart: unless-stopped
