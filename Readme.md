@@ -142,6 +142,7 @@ docker compose up --force-recreate
 
 Once you see a log like:
 
+
 - [boot] Gradio starting on 0.0.0.0:7860 (share=false)
 
 Open http://localhost:7861 in your browser.

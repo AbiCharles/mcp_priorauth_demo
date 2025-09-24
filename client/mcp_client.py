@@ -1,15 +1,17 @@
 # client/mcp_client.py
-"""
-MCPClient — minimal stdio client for interacting with an MCP server (e.g., pbm_server.py).
+"""Minimal stdio MCP client used by the Gradio frontend to reach the PA backend.
 
-This client:
-- Spawns the MCP server as a subprocess (via stdio).
-- Establishes a session using the official MCP Python SDK.
-- Provides wrappers for listing tools, plans, drugs, and evaluating prior authorization.
+The helper intentionally hides all asyncio plumbing so the UI code can make
+plain method calls that:
+
+* Spawn the MCP server as a subprocess (using stdio transport).
+* Establish a session via the official MCP Python SDK.
+* Marshal tool responses back into Python-native dict/list primitives.
 
 Environment variables respected:
-- MCP_SERVER_CMD: explicit command to run the server (string or list form).
-- MCP_SERVER_PY:  fallback path to a Python server file if MCP_SERVER_CMD not provided.
+- ``MCP_SERVER_CMD`` – explicit command to run the server (string or list form).
+- ``MCP_SERVER_PY`` – fallback path to a Python server file if
+  ``MCP_SERVER_CMD`` is not provided.
 """
 
 from __future__ import annotations
@@ -93,18 +95,26 @@ class MCPClient:
 
     # ---- Session plumbing ----
     def _run(self, coro):
-        """Helper: run async coroutine synchronously."""
+        """Synchronously execute an async coroutine using ``asyncio.run``.
+
+        The Gradio layer is entirely synchronous; this helper keeps the public
+        API ergonomics simple while still leveraging the async MCP SDK under
+        the hood.
+        """
         return asyncio.run(coro)
 
     async def _with_session(self, fn):
-        """
-        Open a stdio session with the MCP server, run `fn(session)`, then cleanly shut down.
+        """Open a stdio session, run ``fn(session)``, and guarantee shutdown.
 
-        Args:
-            fn: Async function that takes a ClientSession.
+        Parameters
+        ----------
+        fn:
+            Awaitable that accepts a :class:`~mcp.client.session.ClientSession`.
 
-        Returns:
-            Result of `fn(session)`.
+        Returns
+        -------
+        Any
+            Whatever the provided callback returns.
         """
         async with stdio_client(self.server_params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -193,15 +203,11 @@ class MCPClient:
         return self._run(self._with_session(runner))
 
     def _call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
-        """
-        Call a specific MCP tool by name with given arguments.
+        """Invoke ``name`` with ``arguments`` and coerce the response.
 
-        Args:
-            name: Tool name.
-            arguments: Arguments dict.
-
-        Returns:
-            Decoded Python object or raw result.
+        The implementation normalizes the various content containers that MCP
+        servers return (content blocks, raw JSON strings, etc.) so callers can
+        handle plain Python structures without worrying about transport format.
         """
         async def runner(session: ClientSession):
             res = await session.call_tool(name, arguments=arguments)

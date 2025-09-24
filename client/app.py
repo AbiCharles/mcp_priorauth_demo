@@ -1,4 +1,5 @@
 # client/app.py
+"""Gradio frontend that orchestrates MCP, FastAPI, and local fallbacks for PA evals."""
 from __future__ import annotations
 
 import json
@@ -59,6 +60,7 @@ DEFAULTS = {
 # Load formulary (local fallback for plan list)
 # -----------------------------
 def load_formulary_map() -> Dict[str, List[str]]:
+    """Return a plan→drug mapping from ``formulary.json`` or a safe fallback."""
     try:
         with open(FORMULARY_PATH, "r") as f:
             data = json.load(f)
@@ -83,6 +85,7 @@ FORMULARY = load_formulary_map()
 ALL_PLANS = sorted(FORMULARY.keys())
 
 def initial_defaults_from_formulary() -> Tuple[str, str]:
+    """Choose UI defaults that align with the loaded formulary + fixed drug list."""
     plan = DEFAULTS["plan"] if DEFAULTS["plan"] in FORMULARY else (ALL_PLANS[0] if ALL_PLANS else "")
     # Drug defaults now come from DRUG_CHOICES, not the formulary mapping
     drug = DEFAULTS["drug"] if DEFAULTS["drug"] in DRUG_CHOICES else DRUG_CHOICES[0]
@@ -96,21 +99,25 @@ if INIT_DRUG not in DRUG_CHOICES:
 # Utils
 # -----------------------------
 def to_float(s: str, default: float = 0.0) -> float:
+    """Robust ``float`` conversion that returns ``default`` on failure."""
     try:
         return float(str(s).strip())
     except Exception:
         return default
 
 def to_int(s: str, default: int = 0) -> int:
+    """Robust ``int`` conversion that tolerates float inputs and blanks."""
     try:
         return int(float(str(s).strip()))
     except Exception:
         return default
 
 def fmt_json(obj: object) -> str:
+    """Pretty-print helper for the debug panes."""
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 def _api_alive() -> bool:
+    """Quick health check that gates FastAPI requests."""
     try:
         r = requests.get(f"{PBM_API_BASE}/healthz", timeout=(2, 5))
         return r.ok
@@ -144,6 +151,7 @@ def _normalize_drug_for_api(drug: str) -> str:
 # Local evaluator (fallback)
 # -----------------------------
 def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, str]) -> Dict:
+    """Deterministic fallback mirroring a subset of the policy heuristics."""
     # Parse
     age = to_int(fields.get("age", ""), 0)
     a1c = to_float(fields.get("a1c", ""), -1.0)
@@ -241,6 +249,7 @@ def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, 
 # Transform MCP response -> UI sections
 # -----------------------------
 def mcp_to_sections(resp: Dict[str, any]) -> Dict[str, any]:
+    """Normalize an MCP tool payload into UI-friendly requirement buckets."""
     criteria = resp.get("criteria_evaluation", []) or []
     step_required = resp.get("step_therapy_required", []) or []
     step_ok = bool(resp.get("step_therapy_satisfied", True))
@@ -288,6 +297,7 @@ def mcp_to_sections(resp: Dict[str, any]) -> Dict[str, any]:
 # MCP discovery (optional)
 # -----------------------------
 def try_mcp_lists() -> Tuple[List[str], Dict[str, List[str]]]:
+    """Best-effort fetch of plans/drugs via MCP to populate dropdowns."""
     if not MCP_AVAILABLE:
         return ALL_PLANS, FORMULARY
     try:
@@ -312,12 +322,11 @@ def evaluate_via_mcp(
     fields: Dict[str, str],
     use_llama: bool,   # controls LLaMA rationale on API
 ):
-    """
-    Returns (sections, provenance, steps, patient_payload, raw_response, llm_rationale)
-    Preference order:
-      1) FastAPI (pbm_server) if PBM_API_BASE is alive
-      2) MCP server if available
-      3) Local heuristic fallback
+    """Core orchestrator that fans out to API, MCP, or local paths.
+
+    Returns a tuple ``(sections, provenance, steps, patient_payload,
+    raw_response, llm_rationale)`` and logs each decision branch to ``steps``
+    for later surface in the debug tab.
     """
     steps: List[str] = []
     patient_payload: Dict = {}
@@ -496,6 +505,7 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
             raw_code = gr.Code(label="Raw response", value="{}", language="json")
 
     def on_plan_change(plan: str) -> dict:
+        """Keep the drug dropdown pinned to the curated list regardless of plan."""
         # Keep the fixed drug list, regardless of plan
         value = DEFAULT_DRUG if DEFAULT_DRUG in DRUG_CHOICES else DRUG_CHOICES[0]
         return gr.update(choices=DRUG_CHOICES, value=value)
@@ -503,6 +513,7 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
     plan_dd.change(fn=on_plan_change, inputs=[plan_dd], outputs=[drug_dd], queue=False)
 
     def on_reload_defaults():
+        """Restore each widget to its original default value."""
         plan, _ = initial_defaults_from_formulary()
         return (
             gr.update(value=plan, choices=ALL_PLANS),
@@ -525,6 +536,7 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
     )
 
     def render_sections(evaluation: Dict) -> Tuple[str, str, str, str]:
+        """Convert the evaluation dict into markdown panels and a status banner."""
         reqs = evaluation.get("requirements", [])
         meets = set(evaluation.get("meets", []))
         missing = evaluation.get("missing", [])
@@ -572,6 +584,7 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
         use_remote: bool,
         use_llama: bool,
     ):
+        """Primary click handler invoked when the user presses Evaluate."""
         fields = {
             "diagnosis_text": diagnosis_text,
             "icd10": icd10,
