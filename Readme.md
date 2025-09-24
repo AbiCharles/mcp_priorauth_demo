@@ -144,7 +144,7 @@ Once you see a log like:
 
 - [boot] Gradio starting on 0.0.0.0:7860 (share=false)
 
-Open http://localhost:7860 in your browser.
+Open http://localhost:7861 in your browser.
 
 If you need a shareable link for a demo, set GRADIO_SHARE=true in .env and restart.
 
@@ -274,3 +274,15 @@ The MCP server reads:
 | **4** | AcmeCommercial | Semaglutide | Obesity with comorbidity (HTN) | E66.9 | 50 | — | 34.0 | Lifestyle program 4 months | Obesity | **APPROVE** | If policy includes obesity path (BMI ≥30), lifestyle ≥3 mo. |
 | **5** | AcmeCommercial | Semaglutide | Type 2 diabetes mellitus | E11.9 | 39 | 8.2 | 28.0 | Metformin + DPP‑4 | Type 2 diabetes | **APPROVE** | Age ≥18, A1c ≥7, step therapy met with DPP‑4. |
 | **6** | AcmeCommercial | Semaglutide | Type 2 diabetes mellitus | E11.9 | 66 | — | 32.0 | Metformin + SGLT2 | Type 2 diabetes | **DENY (miss)** | Missing A1c when required → “Add recent A1c value”. |
+
+
+# Clear the Docker build-space error
+### see usage
+docker system df
+
+#### free images/containers/networks not in use
+docker system prune -af
+
+### also free build cache and volumes if needed (more aggressive)
+docker builder prune -af
+docker system prune -af --volumes

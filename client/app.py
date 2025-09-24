@@ -29,13 +29,15 @@ if MCPClient:
     MCP_STATUS = "client ready (lazy connect)"
 # -----------------------------------------------
 
-# ------------------------------------
 DATA_DIR = Path("/app/data")
 FORMULARY_PATH = DATA_DIR / "formulary.json"
 
 # Preferred defaults (can be overridden by env) — prefilled to an APPROVE case
 DEFAULT_PLAN = os.environ.get("DEFAULT_PLAN", "AcmeCommercial")
 DEFAULT_DRUG = os.environ.get("DEFAULT_DRUG", "Semaglutide")
+
+# Fixed drug list for dropdown
+DRUG_CHOICES = ["Semaglutide", "Tirzepatide", "Wegovy", "Mounjaro"]
 
 # FastAPI policy server base URL (pbm_server.py)
 PBM_API_BASE = os.getenv("PBM_API_BASE", "http://localhost:7860").rstrip("/")
@@ -48,13 +50,13 @@ DEFAULTS = {
     "age": "52",                                   # meets Age >= 18
     "a1c": "8.1",                                  # used by local fallback
     "bmi": "31.0",
-    # API path reads A1c & step therapy from NOTES (plus tried meds list)
+    # API path reads A1c/BMI from labs (sent below) and step therapy from notes/tried_meds
     "notes": "A1c 8.1% despite 6 months of metformin and empagliflozin; no contraindications.",
     "indication": "Type 2 diabetes",
 }
 
 # -----------------------------
-# Load formulary (local fallback)
+# Load formulary (local fallback for plan list)
 # -----------------------------
 def load_formulary_map() -> Dict[str, List[str]]:
     try:
@@ -63,6 +65,7 @@ def load_formulary_map() -> Dict[str, List[str]]:
         plans_blob = data.get("plans", {})
         mapping: Dict[str, List[str]] = {}
         for plan, blob in plans_blob.items():
+            # We no longer use this to drive drug choices, but keep for plan list
             drugs = sorted(list((blob or {}).get("PA", {}).keys()))
             mapping[plan] = drugs
         if mapping:
@@ -81,11 +84,13 @@ ALL_PLANS = sorted(FORMULARY.keys())
 
 def initial_defaults_from_formulary() -> Tuple[str, str]:
     plan = DEFAULTS["plan"] if DEFAULTS["plan"] in FORMULARY else (ALL_PLANS[0] if ALL_PLANS else "")
-    drugs = FORMULARY.get(plan, [])
-    drug = DEFAULTS["drug"] if DEFAULTS["drug"] in drugs else (drugs[0] if drugs else "")
+    # Drug defaults now come from DRUG_CHOICES, not the formulary mapping
+    drug = DEFAULTS["drug"] if DEFAULTS["drug"] in DRUG_CHOICES else DRUG_CHOICES[0]
     return plan, drug
 
 INIT_PLAN, INIT_DRUG = initial_defaults_from_formulary()
+if INIT_DRUG not in DRUG_CHOICES:
+    INIT_DRUG = DRUG_CHOICES[0]
 
 # -----------------------------
 # Utils
@@ -186,8 +191,9 @@ def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, 
     is_t2dm = ("type 2" in lower_diag) or ("t2dm" in lower_diag) or ("e11" in lower_diag)
 
     T2DM_A1C_THRESHOLD = 7.5
-    OBESITY_BMI_PRIMARY = 30.0
-    OBESITY_BMI_SECONDARY = 27.0
+    # Updated per requirement: any BMI < 28 should be denied when BMI applies
+    OBESITY_BMI_PRIMARY = 28.0
+    OBESITY_BMI_SECONDARY = 27.0  # not used without comorbidity modeling
 
     if is_t2dm:
         reqs.append(f"T2DM A1C threshold (≥{T2DM_A1C_THRESHOLD})")
@@ -197,15 +203,14 @@ def local_evaluate(plan: str, drug: str, diagnosis_text: str, fields: Dict[str, 
             missing.append(f"A1C must be ≥ {T2DM_A1C_THRESHOLD} for T2DM policy")
 
     if is_obesity:
-        reqs.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY} or ≥{OBESITY_BMI_SECONDARY} + comorbidity)")
-        # We don't model comorbidities here; enforce primary BMI as minimal safeguard
+        reqs.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY})")
         if bmi >= OBESITY_BMI_PRIMARY:
-            meets.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY} or ≥{OBESITY_BMI_SECONDARY} + comorbidity)")
+            meets.append(f"Obesity BMI policy (≥{OBESITY_BMI_PRIMARY})")
         else:
-            missing.append(f"Obesity BMI policy not met (BMI≥{OBESITY_BMI_PRIMARY} or BMI≥{OBESITY_BMI_SECONDARY} with comorbidity)")
+            missing.append(f"Obesity BMI policy not met (BMI≥{OBESITY_BMI_PRIMARY})")
 
     # Formulary + step (basic local heuristics)
-    on_formulary = drug in FORMULARY.get(plan, [])
+    on_formulary = (drug in FORMULARY.get(plan, [])) or (drug in DRUG_CHOICES)
     notes = (fields.get("notes") or "").lower()
     metformin_fail = "metformin" in notes and any(k in notes for k in ["fail", "failed", "inadequate", "intoler"])
 
@@ -306,7 +311,7 @@ def evaluate_via_mcp(
     diagnosis_text: str,
     fields: Dict[str, str],
     use_llama: bool,   # controls LLaMA rationale on API
-) -> Tuple[Dict, str, List[str], Dict, Dict, str]:
+):
     """
     Returns (sections, provenance, steps, patient_payload, raw_response, llm_rationale)
     Preference order:
@@ -350,7 +355,7 @@ def evaluate_via_mcp(
                 "tried_medications": tried_failed,
                 "allergies": [],
                 "notes": notes,
-                "labs": {
+                "labs": {  # send structured labs so server prefers them over notes
                     "A1c": to_float(fields.get("a1c", "0"), 0.0),
                     "BMI": to_float(fields.get("bmi", "0"), 0.0),
                 },
@@ -432,12 +437,12 @@ def evaluate_via_mcp(
 # -----------------------------
 # UI
 # -----------------------------
-MCP_PLANS, MCP_FORMULARY = try_mcp_lists()
+MCP_PLANS, MCP_FORMULARY = (ALL_PLANS, FORMULARY)  # keep same UI behavior; we use fixed drug list
 ALL_PLANS = MCP_PLANS or ALL_PLANS
 FORMULARY = MCP_FORMULARY or FORMULARY
 INIT_PLAN, INIT_DRUG = (
     (DEFAULTS["plan"], DEFAULTS["drug"])
-    if DEFAULTS["plan"] in FORMULARY and DEFAULTS["drug"] in FORMULARY[DEFAULTS["plan"]]
+    if DEFAULTS["plan"] in FORMULARY and DEFAULTS["drug"] in DRUG_CHOICES
     else initial_defaults_from_formulary()
 )
 
@@ -448,10 +453,10 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
         with gr.Column(scale=1):
             plan_dd = gr.Dropdown(label="Plan", choices=ALL_PLANS, value=INIT_PLAN, interactive=True)
         with gr.Column(scale=1):
-            drug_dd = gr.Dropdown(
+            drug_dd = gr.Dropdown(  # fixed list per requirement
                 label="Drug",
-                choices=FORMULARY.get(INIT_PLAN, []),
-                value=INIT_DRUG,
+                choices=DRUG_CHOICES,
+                value=(INIT_DRUG if INIT_DRUG in DRUG_CHOICES else DRUG_CHOICES[0]),
                 interactive=True,
             )
 
@@ -483,7 +488,7 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
     provenance_md = gr.Markdown("")
     llm_md = gr.Markdown("### LLM Rationale\n*(none yet)*")  # shows LLaMA explanation if enabled
 
-    # Trace & Debug tab (kept)
+    # Trace & Debug tab
     with gr.Tabs():
         with gr.Tab("Trace & Debug"):
             steps_md = gr.Markdown("### Trace\n*(no steps yet)*")
@@ -491,17 +496,18 @@ with gr.Blocks(title="MCP + Together AI • Pharmacy Benefits Prior Authorizatio
             raw_code = gr.Code(label="Raw response", value="{}", language="json")
 
     def on_plan_change(plan: str) -> dict:
-        choices = FORMULARY.get(plan, [])
-        value = DEFAULT_DRUG if DEFAULT_DRUG in choices else (choices[0] if choices else "")
-        return gr.update(choices=choices, value=value)
+        # Keep the fixed drug list, regardless of plan
+        value = DEFAULT_DRUG if DEFAULT_DRUG in DRUG_CHOICES else DRUG_CHOICES[0]
+        return gr.update(choices=DRUG_CHOICES, value=value)
 
     plan_dd.change(fn=on_plan_change, inputs=[plan_dd], outputs=[drug_dd], queue=False)
 
     def on_reload_defaults():
-        plan, drug = initial_defaults_from_formulary()
+        plan, _ = initial_defaults_from_formulary()
         return (
             gr.update(value=plan, choices=ALL_PLANS),
-            gr.update(value=drug, choices=FORMULARY.get(plan, [])),
+            gr.update(value=(DEFAULTS["drug"] if DEFAULTS["drug"] in DRUG_CHOICES else DRUG_CHOICES[0]),
+                      choices=DRUG_CHOICES),
             gr.update(value=DEFAULTS["diagnosis_text"]),
             gr.update(value=DEFAULTS["icd10"]),
             gr.update(value=DEFAULTS["age"]),
@@ -651,7 +657,7 @@ if __name__ == "__main__":
 
     print(f"[boot] Gradio starting on {GR_HOST}:{GR_PORT} (share={GR_SHARE})")
 
-    # NOTE: We avoid demo.queue(); events use queue=False above.
+    # We avoid demo.queue(); events use queue=False above.
     demo.launch(
         server_name=GR_HOST,
         server_port=GR_PORT,
